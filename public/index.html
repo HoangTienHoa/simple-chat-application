@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Kafka Chat</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: system-ui, sans-serif; background: #f2f3f5; color: #222; }
+    header { padding: 12px 16px; background: #1f2937; color: #fff; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+    header h1 { font-size: 18px; margin: 0; flex: 1; }
+    select { padding: 6px 8px; font-size: 14px; }
+    .badge { font-size: 12px; padding: 2px 8px; border-radius: 10px; color: #fff; }
+    .p0 { background: #2563eb; }
+    .p1 { background: #16a34a; }
+    #messages { list-style: none; margin: 0; padding: 16px; height: calc(100vh - 120px); overflow-y: auto; display: flex; flex-direction: column; gap: 8px; }
+    .msg { max-width: 70%; padding: 8px 12px; border-radius: 12px; background: #fff; box-shadow: 0 1px 2px rgba(0,0,0,.1); align-self: flex-start; }
+    .msg.mine { align-self: flex-end; background: #dbeafe; }
+    .meta { font-size: 11px; color: #666; margin-bottom: 4px; display: flex; gap: 6px; align-items: center; }
+    form { display: flex; gap: 8px; padding: 12px 16px; background: #fff; border-top: 1px solid #ddd; }
+    input { flex: 1; padding: 10px; font-size: 15px; border: 1px solid #ccc; border-radius: 6px; }
+    button { padding: 10px 18px; font-size: 15px; border: 0; border-radius: 6px; background: #2563eb; color: #fff; cursor: pointer; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Kafka Chat — topic <code>chat</code> (2 partition)</h1>
+    <label>Bạn là:
+      <select id="user"></select>
+    </label>
+    <span id="partitionInfo"></span>
+  </header>
+  <ul id="messages"></ul>
+  <form id="form">
+    <input id="text" autocomplete="off" placeholder="Nhập tin nhắn..." autofocus>
+    <button type="submit">Gửi</button>
+  </form>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script>
+    const socket = io();
+    const userSelect = document.getElementById('user');
+    const partitionInfo = document.getElementById('partitionInfo');
+    const list = document.getElementById('messages');
+    const form = document.getElementById('form');
+    const input = document.getElementById('text');
+    let users = [];
+
+    const params = new URLSearchParams(location.search);
+
+    fetch('/api/users').then((r) => r.json()).then((data) => {
+      users = data;
+      userSelect.innerHTML = users.map((u) => `<option value="${u.id}">${u.id}</option>`).join('');
+      if (params.get('user')) userSelect.value = params.get('user');
+      updateInfo();
+    });
+
+    function updateInfo() {
+      const u = users.find((x) => x.id === userSelect.value);
+      if (!u) return;
+      partitionInfo.innerHTML = `hash=${u.hash} → <span class="badge p${u.partition}">partition ${u.partition}</span>`;
+      document.querySelectorAll('.msg').forEach((el) => el.classList.toggle('mine', el.dataset.user === u.id));
+    }
+    userSelect.addEventListener('change', updateInfo);
+
+    function render(msg) {
+      const li = document.createElement('li');
+      li.className = 'msg' + (msg.userId === userSelect.value ? ' mine' : '');
+      li.dataset.user = msg.userId;
+      const time = new Date(msg.sentAt).toLocaleTimeString();
+      li.innerHTML = `<div class="meta"><b></b><span class="badge p${msg.partition}">P${msg.partition} · offset ${msg.offset}</span>${time}</div><div class="text"></div>`;
+      li.querySelector('b').textContent = msg.userId;
+      li.querySelector('.text').textContent = msg.text;
+      list.appendChild(li);
+      list.scrollTop = list.scrollHeight;
+    }
+
+    socket.on('history', (msgs) => { list.innerHTML = ''; msgs.forEach(render); });
+    socket.on('message', render);
+
+    form.addEventListener('submit', (e) => {
+      e.preventDefault();
+      const text = input.value.trim();
+      if (!text) return;
+      socket.emit('send', { userId: userSelect.value, text }, (res) => {
+        if (!res.ok) alert('Gửi thất bại: ' + res.error);
+      });
+      input.value = '';
+    });
+  </script>
+</body>
+</html>
