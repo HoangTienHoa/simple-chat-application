@@ -47,6 +47,8 @@ Trình duyệt user2 ─┘   (Socket.IO)    topic chat  └─► partition 1 (
 ├── docker-compose.yml   # Kafka, kafka-init (tạo topic), kafka-ui
 ├── server.js            # Express + Socket.IO + KafkaJS (producer & consumer)
 ├── public/index.html    # Giao diện chat
+├── Dockerfile           # Image của web chat
+├── .github/workflows/docker-publish.yml  # CI: build & push image lên GHCR
 └── package.json
 ```
 
@@ -111,6 +113,31 @@ Trình duyệt user2 ─┘   (Socket.IO)    topic chat  └─► partition 1 (
 | `KAFKA_BROKER` | `localhost:9094` | Địa chỉ Kafka broker |
 
 Ví dụ: `PORT=4000 npm start`
+
+## Docker image & CI
+
+Workflow [.github/workflows/docker-publish.yml](.github/workflows/docker-publish.yml) build image của web chat (theo [Dockerfile](Dockerfile)) cho `linux/amd64` và `linux/arm64`, rồi push lên GitHub Container Registry:
+
+| Sự kiện | Kết quả |
+|---|---|
+| Push lên `master` | Push image với tag `latest` và `sha-<commit>` |
+| Push tag `v1.2.3` | Push image với tag `1.2.3` và `1.2` |
+| Pull request vào `master` | Chỉ build để kiểm tra, không push |
+| Chạy tay (Actions → Run workflow) | Build và push theo branch được chọn |
+
+Workflow dùng `GITHUB_TOKEN` có sẵn nên không cần tạo secret. Image nằm ở `ghcr.io/<owner>/<repo>`, mặc định là **private**. Muốn đổi sang public, vào **Packages → Package settings** trên GitHub.
+
+Chạy image cùng Kafka trong `docker-compose.yml`:
+
+```bash
+docker compose up -d
+docker run --rm -p 3000:3000 \
+  --network kafka-demo_default \
+  -e KAFKA_BROKER=kafka:29092 \
+  ghcr.io/<owner>/<repo>:latest
+```
+
+Container nằm cùng network với Kafka, nên phải dùng listener nội bộ `kafka:29092` thay cho `localhost:9094`.
 
 ## Dừng project
 
