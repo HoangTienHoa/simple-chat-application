@@ -35,7 +35,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # main -> latest + sha-xxxxxxx; tag v1.2.3 -> 1.2.3, 1.2
+      # master -> latest + sha-xxxxxxx; tag v1.2.3 -> 1.2.3, 1.2
       - name: Docker metadata
         id: meta
         uses: docker/metadata-action@v5
@@ -58,3 +58,38 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  # Deploy lên server qua SSH sau khi build xong trên master.
+  # Tự bỏ qua cho đến khi repo có variable DEPLOY_HOST.
+  deploy:
+    needs: build
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/master' && vars.DEPLOY_HOST != ''
+    runs-on: ubuntu-latest
+    concurrency: production
+    env:
+      DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
+      DEPLOY_USER: ${{ vars.DEPLOY_USER }}
+      DEPLOY_PORT: ${{ vars.DEPLOY_PORT || '22' }}
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up SSH key
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -p "$DEPLOY_PORT" "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+
+      - name: Upload compose file
+        run: |
+          ssh -i ~/.ssh/deploy_key -p "$DEPLOY_PORT" "$DEPLOY_USER@$DEPLOY_HOST" 'mkdir -p kafka-chat'
+          scp -i ~/.ssh/deploy_key -P "$DEPLOY_PORT" deploy/docker-compose.prod.yml "$DEPLOY_USER@$DEPLOY_HOST:kafka-chat/docker-compose.yml"
+
+      # Deploy đúng image vừa build (tag sha-xxxxxxx), không dùng latest
+      - name: Deploy
+        run: |
+          IMAGE="ghcr.io/${GITHUB_REPOSITORY,,}:sha-${GITHUB_SHA::7}"
+          ssh -i ~/.ssh/deploy_key -p "$DEPLOY_PORT" "$DEPLOY_USER@$DEPLOY_HOST" "bash -s -- $IMAGE" < deploy/remote-deploy.sh

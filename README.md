@@ -48,7 +48,10 @@ Trình duyệt user2 ─┘   (Socket.IO)    topic chat  └─► partition 1 (
 ├── server.js            # Express + Socket.IO + KafkaJS (producer & consumer)
 ├── public/index.html    # Giao diện chat
 ├── Dockerfile           # Image của web chat
-├── .github/workflows/docker-publish.yml  # CI: build & push image lên GHCR
+├── .github/workflows/docker-publish.yml  # CI/CD: build, push image lên GHCR, deploy
+├── deploy/
+│   ├── docker-compose.prod.yml  # Stack chạy trên server
+│   └── remote-deploy.sh         # Script workflow chạy trên server qua SSH
 └── package.json
 ```
 
@@ -138,6 +141,59 @@ docker run --rm -p 3000:3000 \
 ```
 
 Container nằm cùng network với Kafka, nên phải dùng listener nội bộ `kafka:29092` thay cho `localhost:9094`.
+
+## Tự động deploy lên server
+
+Job `deploy` trong workflow chạy sau khi `build` xong, mỗi lần push lên `master`:
+
+1. SSH vào server và copy [deploy/docker-compose.prod.yml](deploy/docker-compose.prod.yml) thành `~/kafka-chat/docker-compose.yml`.
+2. Chạy [deploy/remote-deploy.sh](deploy/remote-deploy.sh) trên server:
+   - ghi `APP_IMAGE=ghcr.io/<owner>/<repo>:sha-<commit>` vào `.env`;
+   - chạy `docker compose pull app` rồi `docker compose up -d`. Chỉ container `app` được tạo lại, Kafka vẫn chạy nguyên;
+   - chờ app trả lời `/api/users`. Quá 60 giây không có phản hồi thì in log và báo lỗi.
+
+Job này **tự bỏ qua** cho đến khi bạn cấu hình xong các bước dưới đây.
+
+### Bước 1: Chuẩn bị server
+- Server Linux đã cài Docker và Docker Compose plugin (`docker compose version` chạy được).
+- User dùng để deploy chạy được lệnh `docker` mà không cần sudo: `sudo usermod -aG docker <user>`, sau đó đăng nhập lại.
+- Mở port `3000` trên firewall, ví dụ `sudo ufw allow 3000`.
+
+### Bước 2: Tạo SSH key riêng cho deploy (chạy trên máy bạn)
+```bash
+ssh-keygen -t ed25519 -f ~/.ssh/kafka_chat_deploy -N "" -C "github-actions-deploy"
+ssh-copy-id -i ~/.ssh/kafka_chat_deploy.pub <user>@<server>
+ssh -i ~/.ssh/kafka_chat_deploy <user>@<server> 'docker ps'   # kiểm tra
+```
+
+### Bước 3: Khai báo trên GitHub
+Vào repo → **Settings → Secrets and variables → Actions**:
+
+| Loại | Tên | Giá trị |
+|---|---|---|
+| Secret | `DEPLOY_SSH_KEY` | Nội dung file `~/.ssh/kafka_chat_deploy` (private key, kể cả dòng `-----BEGIN/END-----`) |
+| Variable | `DEPLOY_HOST` | IP hoặc domain của server |
+| Variable | `DEPLOY_USER` | User SSH |
+| Variable | `DEPLOY_PORT` | Port SSH. Không bắt buộc, mặc định `22` |
+
+### Bước 4: Push lên `master`
+Mở tab **Actions** để xem: job `build` chạy trước, sau đó đến `deploy`. Khi deploy xong:
+- Web chat: `http://<server>:3000`
+- Kafka UI không mở ra Internet, vì không có đăng nhập. Mở bằng SSH tunnel:
+  ```bash
+  ssh -L 8081:localhost:8081 <user>@<server>
+  # rồi mở http://localhost:8081 trên máy bạn
+  ```
+
+### Trên server
+- **Dữ liệu Kafka** nằm trong volume `kafka-chat_kafka-data`, còn nguyên khi deploy lại hay reboot. Chỉ mất khi chạy `docker compose down -v`.
+- **Đổi port:** thêm `APP_PORT=80` hoặc `UI_PORT=...` vào `~/kafka-chat/.env`. Script deploy chỉ ghi đè dòng `APP_IMAGE`, các dòng khác giữ nguyên.
+- **Rollback:**
+  ```bash
+  cd ~/kafka-chat && sed -i 's/^APP_IMAGE=.*/APP_IMAGE=ghcr.io\/<owner>\/<repo>:sha-<commit cũ>/' .env && docker compose up -d
+  ```
+  Cách khác: chạy lại workflow của commit cũ trong tab Actions.
+- **Image private:** nếu package GHCR là private, chạy `docker login ghcr.io` một lần trên server bằng token có quyền `read:packages`.
 
 ## Dừng project
 
